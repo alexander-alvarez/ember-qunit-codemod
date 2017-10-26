@@ -2,6 +2,28 @@ module.exports = function(file, api, options) {
   const j = api.jscodeshift;
   const root = j(file.source);
 
+  const POSSIBLE_MODULES = [
+    { expression: { callee: { name: 'module' } } },
+    { expression: { callee: { name: 'moduleFor' } } },
+    { expression: { callee: { name: 'moduleForComponent' } } },
+    { expression: { callee: { name: 'moduleForModel' } } },
+  ];
+
+  function isModuleDefinition(nodePath) {
+    return POSSIBLE_MODULES.some(matcher => j.match(nodePath, matcher));
+  }
+
+  const LIFE_CYCLE_METHODS = [
+    { key: { name: 'before' }, value: { type: 'FunctionExpression' } },
+    { key: { name: 'beforeEach' }, value: { type: 'FunctionExpression' } },
+    { key: { name: 'afterEach' }, value: { type: 'FunctionExpression' } },
+    { key: { name: 'after' }, value: { type: 'FunctionExpression' } },
+  ];
+
+  function isLifecycleHook(nodePath) {
+    return LIFE_CYCLE_METHODS.some(matcher => j.match(nodePath, matcher));
+  }
+
   function ensureImportWithSpecifiers({ source, specifiers, anchor, positionMethod }) {
     let importStatement = ensureImport(source, anchor, positionMethod);
     let combinedSpecifiers = new Set(specifiers);
@@ -189,28 +211,6 @@ module.exports = function(file, api, options) {
   }
 
   function updateModuleForToNestedModule() {
-    const POSSIBLE_MODULES = [
-      { expression: { callee: { name: 'module' } } },
-      { expression: { callee: { name: 'moduleFor' } } },
-      { expression: { callee: { name: 'moduleForComponent' } } },
-      { expression: { callee: { name: 'moduleForModel' } } },
-    ];
-
-    function isModuleDefinition(nodePath) {
-      return POSSIBLE_MODULES.some(matcher => j.match(nodePath, matcher));
-    }
-
-    const LIFE_CYCLE_METHODS = [
-      { key: { name: 'before' }, value: { type: 'FunctionExpression' } },
-      { key: { name: 'beforeEach' }, value: { type: 'FunctionExpression' } },
-      { key: { name: 'afterEach' }, value: { type: 'FunctionExpression' } },
-      { key: { name: 'after' }, value: { type: 'FunctionExpression' } },
-    ];
-
-    function isLifecycleHook(nodePath) {
-      return LIFE_CYCLE_METHODS.some(matcher => j.match(nodePath, matcher));
-    }
-
     function createModule(p) {
       let [moduleName, options, setupType, subject, hasCustomSubject] = parseModule(p);
 
@@ -445,8 +445,8 @@ module.exports = function(file, api, options) {
     bodyPath.replace(bodyReplacement);
   }
 
-  function updateLookupCalls() {
-    root
+  function updateLookupCalls(ctx) {
+    ctx
       .find(j.MemberExpression, {
         object: {
           object: { type: 'ThisExpression' },
@@ -590,15 +590,31 @@ module.exports = function(file, api, options) {
     }
   }
 
+  function runInModuleOrBeforeEachBlock(cb) {
+    let programPath = root.get('program');
+    let bodyPath = programPath.get('body');
+
+    bodyPath.each(expressionPath => {
+      let expression = expressionPath.node;
+      if (isModuleDefinition(expressionPath)) {
+        let [, options, ,] = parseModule(expressionPath);
+        if (options) {
+          options.forEach(p => cb(p));
+        }
+        cb(j(expression));
+      }
+    });
+  }
+
   const printOptions = options.printOptions || { quote: 'single' };
 
   moveQUnitImportsFromEmberQUnit();
   updateToNewEmberQUnitImports();
   updateEmberTestHelperImports();
   updateModuleForToNestedModule();
-  updateLookupCalls();
-  updateRegisterCalls();
-  updateInjectCalls();
+  runInModuleOrBeforeEachBlock(updateLookupCalls);
+  runInModuleOrBeforeEachBlock(updateRegisterCalls);
+  runInModuleOrBeforeEachBlock(updateInjectCalls);
   updateWaitUsage();
 
   return root.toSource(printOptions);
