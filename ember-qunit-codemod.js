@@ -13,6 +13,12 @@ module.exports = function(file, api, options) {
     return POSSIBLE_MODULES.some(matcher => j.match(nodePath, matcher));
   }
 
+  function getModuleDefinition(nodePath) {
+    let match = POSSIBLE_MODULES.find(matcher => j.match(nodePath, matcher));
+    // TODO why can't i do something like this...
+    return root.find(j.CallExpression, match);
+  }
+
   const LIFE_CYCLE_METHODS = [
     { key: { name: 'before' }, value: { type: 'FunctionExpression' } },
     { key: { name: 'beforeEach' }, value: { type: 'FunctionExpression' } },
@@ -143,11 +149,11 @@ module.exports = function(file, api, options) {
       .replace(Array.from(emberQUnitSpecifiers).map(s => j.importSpecifier(j.identifier(s))));
   }
 
-  function updateEmberTestHelperImports() {
+  function updateEmberTestHelperImports(ctx) {
     let specifiers = new Set();
 
     ['render', 'clearRender'].forEach(type => {
-      let usages = findTestHelperUsageOf(root, type);
+      let usages = findTestHelperUsageOf(ctx, type);
       if (usages.size() > 0) {
         specifiers.add(type);
       }
@@ -460,8 +466,8 @@ module.exports = function(file, api, options) {
       });
   }
 
-  function updateRegisterCalls() {
-    root
+  function updateRegisterCalls(ctx) {
+    ctx
       .find(j.MemberExpression, {
         object: {
           object: { type: 'ThisExpression' },
@@ -474,7 +480,7 @@ module.exports = function(file, api, options) {
         path.replace(j.memberExpression(thisDotOwner, path.value.property));
       });
 
-    root
+    ctx
       .find(j.MemberExpression, {
         object: { type: 'ThisExpression' },
         property: { name: 'register' },
@@ -485,8 +491,8 @@ module.exports = function(file, api, options) {
       });
   }
 
-  function updateInjectCalls() {
-    root
+  function updateInjectCalls(ctx) {
+    ctx
       .find(j.CallExpression, {
         callee: {
           type: 'MemberExpression',
@@ -590,17 +596,33 @@ module.exports = function(file, api, options) {
     }
   }
 
-  function runInModuleOrBeforeEachBlock(cb) {
+  function runInModuleOrOptionsBlock(cb) {
     let programPath = root.get('program');
     let bodyPath = programPath.get('body');
 
     bodyPath.each(expressionPath => {
       let expression = expressionPath.node;
       if (isModuleDefinition(expressionPath)) {
-        let [, options, ,] = parseModule(expressionPath);
+        let moduleDefiniton = getModuleDefinition(expressionPath);
+
+        let [, options, ,] = parseModule(moduleDefiniton);
         if (options) {
-          options.forEach(p => cb(p));
+          // Evaluate the code in the options hooks
+          // options.forEach(p => cb(p));
         }
+        cb(j(expression));
+      }
+    });
+  }
+
+  function runInTest(cb) {
+    let programPath = root.get('program');
+    let bodyPath = programPath.get('body');
+
+    bodyPath.each(expressionPath => {
+      let expression = expressionPath.node;
+      let isTest = j.match(expression, { expression: { callee: { name: 'test' } } });
+      if (isTest) {
         cb(j(expression));
       }
     });
@@ -610,11 +632,11 @@ module.exports = function(file, api, options) {
 
   moveQUnitImportsFromEmberQUnit();
   updateToNewEmberQUnitImports();
-  updateEmberTestHelperImports();
+  runInTest(updateEmberTestHelperImports);
   updateModuleForToNestedModule();
-  runInModuleOrBeforeEachBlock(updateLookupCalls);
-  runInModuleOrBeforeEachBlock(updateRegisterCalls);
-  runInModuleOrBeforeEachBlock(updateInjectCalls);
+  runInModuleOrOptionsBlock(updateLookupCalls);
+  runInModuleOrOptionsBlock(updateRegisterCalls);
+  runInModuleOrOptionsBlock(updateInjectCalls);
   updateWaitUsage();
 
   return root.toSource(printOptions);
